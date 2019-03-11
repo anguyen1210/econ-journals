@@ -1,0 +1,375 @@
+---
+title: "AEA journals and coding preferences"
+output:
+  html_notebook:
+    highlight: tango
+    toc: TRUE
+    toc_float: TRUE
+  html_document:
+    df_print: paged
+    toc: TRUE
+    toc_float: TRUE
+---
+
+```{r setup environment, include = FALSE}
+library(tidyverse)
+library(RSQLite)
+library(knitr)
+library(directlabels)
+library(tidytext)
+library(topicmodels)
+
+# Load saved data
+load("rda/article.rda")
+load("rda/files.rda")
+```
+
+As part of my Applied Econometrics course this semester, we have lab time each week where we are working in Stata. As it's been made clear by our professor, Stata still dominates all other statistical analysis packages, and it is important for us to master the program in order to better communicate with other academics within the field. Also, and just as importantly, Stata is easier to get up and running with than some of the alternatives, which, to my limited knowledge, I would certainly agree with.    
+  
+Anyway, for our Master's thesis, we've been told that we are free to use whatever software we would like. I've been chewing on this topic for a couple of weeks now, as I've spent a lot of time over the past two years trying to learn R.  Should I go ahead and write my thesis in Stata? Does that imply learning and writing with LaTeX as a separate application? Is it worth investing time to learn [Markstat](https://data.princeton.edu/stata/markdown)? Is it really worth the extra effort to calculate robust standard errors or generate dummy variables in R?   
+  
+With all of that said, I was very excited to see this post, '[Finding Economic Articles with Data](http://skranz.github.io/r/2019/02/21/FindingEconomicArticles.html)', from Sebastian Kranz on the [R-bloggers](https://www.r-bloggers.com/) mailing list the other week.  
+  
+Because the [AEA](https://www.aeaweb.org/journals/) requires all authors to upload their data and replication code to go along with journal submissions, there's a nice little repository going back a decade or so of articles, data and code. Kranz has built a great Shiny [app that allows you to search the AEA data archives](http://econ.mathematik.uni-ulm.de:3200/ejd/) to see what data is available. Definitely have a look, it's well done.  
+  
+## Overview of the database  
+  
+As there is a link to the data provided in the blog post, I thought it would be fun to run the analysis myself to see if there is any additional insight we can mine from what's been submitted to AEA.  
+  
+Follow the link to download the [database of economic articles](http://econ.mathematik.uni-ulm.de/ejd/articles.zip) used by Kranz's Shiny app.  
+  
+```{r connect to SQLITE file, eval=FALSE, include=FALSE}
+
+# The following code is for working with the original SQLITE file. 
+# I have otherwise saved the requisite tables as .rda files
+
+# Connect to the SQLITE file
+db <- dbConnect(RSQLite::SQLite(), "data/articles.sqlite")
+
+# List all tables in the file
+dbListTables(db)
+```
+
+```{r convert requisite tables to data frame, eval=FALSE, include=FALSE}
+
+article <- as_tibble(dbGetQuery(db, 'SELECT * FROM article'))
+files <- as_tibble(dbGetQuery(db,'SELECT * FROM files_summary'))
+```    
+The database provided contains information related to published articles submitted to a variety of different economic journals from about 2005 until the present (March 2019 at the time of writing). Also, you can consult the app for a [list of journal abbreviations](http://econ.mathematik.uni-ulm.de:3200/ejd/).  
+  
+From the plot below, we can see that the *American Economic Review* contains the bulk of papers in this database at the present.     
+```{r Plot number of articles by journal, echo = FALSE}
+
+# Number of articles by journal
+p_articles_journ <- article %>% 
+    group_by(journ) %>%
+    summarize(papers = n_distinct(id)) %>%
+    arrange(desc(papers)) %>% 
+    ggplot(aes(x = reorder(journ, -papers), y = papers, fill = journ)) +
+    geom_col(show.legend = FALSE) +
+    theme_minimal() +
+    ggtitle("Number of articles by journal (2005 - 2019)") +
+    ylab("Number of articles") + 
+    xlab("Journal abbreviation")
+
+p_articles_journ
+```
+
+## Software preferences  
+  
+In the original Kranz blog post, he does a quick analysis to show what share of all code submitted to the various AER journals is written in what language. His results confirm that Stata does, in fact, dominate all other software (70% share, compared to 23% for Matlab and only 2.8% for R). After quickly peeking at the data, I can see that there are a few other well-known languages in there that were not factored into his analysis, so let's see what we can find if we dig around some more.   
+  
+### What is the most popular analytical package?  
+  
+As our `files` table includes information about the file extensions for included code snippets, and these tend to be software specific, we can quickly have a look to see what the most popular analytical packages are among all of the journal articles in this database.  
+  
+Here's what the top 15 results look like: 
+```{r filter out data files, calculate counts and percentages, echo = TRUE}
+# Filter out any rows referring to data, only keep coding observations
+files_w_code <- files %>% filter(is_code == 1)
+
+# Language as % of total languages listed
+types_share <- files_w_code %>% 
+    group_by(file_type) %>% 
+    summarize(count = n(), 
+              share = round(count/length(files_w_code$id)*100, 2)) %>% 
+    arrange(desc(share))
+
+# print top 11 results
+head(types_share, 15)
+```
+The results we have here are slightly different from what Kranz showed on his blog. One consideration where I took a slightly different approach is choosing what denominator to scale over. As some studies include multiple code snippets in different languages, simply using the number of individual studies as the denominator (i.e. `length(unique(filed$id))`) would result in our percentages summing to greater than 1. Instead, I've chosen to use the total number of `file_type` entries that remained after filtering the data, which lets our `file_type` share percentages sum nicely.  
+  
+I've left all of the different file types in for this first summary table, but regardless, we can see that Stata is indeed dominant (In fact, we can throw out the .ado files--a Stata format--as they are always coupled with .do files for any journal article in question).  
+  
+Among the other top languages that show up here, we can see that SAS is still in the top five, and C and Python are both more or less in the top ten. The other file extensions are either below 1%, or come from software packages that seem to be quite niche, so we will drop them for the rest of our analysis.  
+  
+Re-running our table from above with the additional filters, we have:  
+```{r filter out minor languages, re-run shares, echo = TRUE}
+
+# Remove .ado files
+files_w_code_main <- files_w_code %>% filter(file_type %in% c("do", "m", "sas", "r", "c", "py"))
+
+# Calculate main languages as % of total languages listed
+types_share_main <- files_w_code_main %>% 
+    group_by(file_type) %>% 
+    summarize(count = n(), 
+              share = round(count/length(files_w_code_main$id)*100, 2)) %>% 
+    arrange(desc(share))
+
+# Print results
+types_share_main
+```
+  
+Again, we see that Stata dominates code submissions with a 67.4% share, followed by a very large share for Matlab at 23.3%. And while the data science community has made R and Python their languages of choice, we can see that among economists, they are still a minority. The aggregate figures show that SAS still has an edge over R, and even C has an edge over Python.  
+  
+### How has the use of different analytical software changed over time?  
+  
+Next we can have have a look to see how the choice of code has evolved over time, using the `year` information from the `article` table from our data set.  
+```{r join and sum over Year, echo  = FALSE}
+
+types_main_year <- files_w_code_main %>% 
+  left_join(select(article, year, id), by="id") %>%
+  group_by(year) %>%
+  mutate(n_type_year = length(file_type)) %>%
+  group_by(year, file_type) %>%
+  summarize(
+    count = n(),
+    share=round((count / first(n_type_year))*100,2)
+  ) %>%
+  arrange(year,desc(share))  
+```
+We can then plot the shares of each main language among all code submissions to the AEA over time:
+```{r plot code shares over time, echo = FALSE}
+p_journ_year <- types_main_year %>%
+    ggplot(aes(x=year, y=share, color=file_type)) + 
+    geom_line(show.legend = FALSE) + 
+    scale_x_continuous(breaks = seq(2005, 2019, by = 4)) +
+    scale_y_log10(breaks = c(0, 1, 3, 10, 30, 70)) +
+    theme_minimal() +
+    geom_dl(aes(label=file_type), method=list(dl.trans(x = x + 0.1), "last.bumpup", cex = .8)) +
+    ggtitle("AEA journals - software preference over time") +
+    ylab("log(share)")
+
+p_journ_year
+```        
+  
+Looking at the use of different packages over time, the picture changes a bit. In this plot we can clearly see Stata's consistent dominance in the economics field, remaining stable around 70% throughout all years despite the movement of the other software packages. Matlab is the next most popular software package, and its usage is also fairly stable--with maybe a slight tailing off in the past decade.    
+     
+Among the rest, it's interesting to see that SAS and C usage has really dropped off over the past 14 years, while conversely, R and Python have had comparable increases in usage. What the aggregate figures from before don't show is that, by roughly 2015, R has overtaken SAS as the third most popular software package, and that, by 2018, both R and Python are more popular than either SAS or C.  
+  
+While the plot clearly shows that both R and Python users are still a minority in the Economics field at the moment (6.7% and 4.8% shares in 2019 respectively), I'm curious to see if their upward trend will continue and if they will get closer to Matlab and Stata at any point in the future. For a number of reasons, I suspect that R and Python usage will only continue to increase going forward (for R in particular), though the question of how close they will get to Stata and Matlab I'm less sure of.  
+  
+### Software package tendencies by journal  
+  
+The last thing I wanted to look at here is the relation between the different journals and coding preferences. In aggregate, we can calculate the shares of our main languages per journal and plot them as follows:      
+```{r plot code share by journal, echo = FALSE}
+
+types_main_journ <- files_w_code_main %>% 
+  left_join(select(article, journ, id), by="id") %>%
+  group_by(journ) %>%
+  mutate(n_type_journ = length(file_type)) %>%
+  group_by(journ, file_type) %>%
+  summarize(
+    count = n(),
+    share=round((count / first(n_type_journ))*100,2)
+  ) %>%
+  arrange(journ,desc(share))  
+
+p_code_journ <- types_main_journ %>% 
+    ggplot(aes(x = reorder(journ, -share), y = share, fill = file_type)) +
+    geom_bar(stat = "identity", position = "fill", show.legend = TRUE) +
+    theme_minimal() +
+    ggtitle("Code submsission share per journal (2005 - 2019)") +
+    ylab("Share") + 
+    xlab("Journal abbreviation")
+
+p_code_journ
+```  
+
+Looking at the plot, a few things stand out to me: first, it appears that the distribution of Stata/Matlab dominance is certainly not even across all journals. The five journals on the right have quite large shares of the Matlab submissions--in particular, *Econometrica* (51%) and *AEJ Macroeconomics* (48.2%), where Matlab submissions are actually greater than Stata.  
+  
+From the R perspective, it's interesting to note that *Econometrica* and the *Journal of Economic Perspectives* both have over 10% of their submissions in R, making them the two leading journals for R users.  
+  
+Lastly, we can see that the three journals on the left-hand side--*Journal of the Association of Environmental and Resource Economists*, *Quarterly Journal of Economics*, and the *Journal of Political Economy*--are notable in that they do not have any R or Python submissions at all.    
+      
+## Keywords and topics
+
+So far, we've mostly been digging around in the `files` table from the database, but the `article` table contains all of the journal article titles and abstracts, which potentially allows us to derive some insight into popular topics covered by all of the journals.    
+
+Similar to what we did above, we can start by just looking at keyword popularity among all of the article submissions in the database.    
+  
+```{r filter and clean `article` table, echo=FALSE}
+
+# Select required columns from `article`
+article_text <- article %>% select(id, year, journ, title, abstract)
+
+# Convert id and journ to factors  
+article_text$id <- as_factor(article_text$id)
+article_text$journ <- as_factor(article_text$journ)
+
+# gather all text into one column  
+article_text <- article_text %>% gather(section, text, 4:5)
+
+article_text$section <- as_factor(article_text$section)
+```
+
+### TF-IDF by years
+
+Here, I'll start with a standard TF-IDF analysis of words used across all titles and abstracts from all journals using the `tidytext` package. You can read more about the technique in detail in Silge and Robinson's (2017) book [Text Mining with R](https://www.tidytextmining.com/). 
+```{r calculate word frequency, include=FALSE}
+
+# Unnest all text in table by single words
+article_words <- article_text %>%
+  unnest_tokens(word, text) 
+
+# Remove stop words--not so necessary for TDF-IDF, 
+# but for topic modeling later, this will be handy
+data("stop_words")
+article_words <- article_words %>% 
+    anti_join(stop_words)
+
+# remove NA rows
+article_words <- article_words %>% filter(is.na(word) != 1)
+
+# Remove a few other meaningless words  
+article_words <- article_words %>% filter(word != "abstract") %>% filter(word != "jel")
+
+# Sum for word frequencies  
+article_words <- article_words %>% 
+    count(id, journ, year, word, sort = TRUE) %>%
+    ungroup()
+
+# Calculate total words
+total_words <- article_words %>% 
+  group_by(year) %>% 
+  summarize(total = sum(n))
+
+article_words <- left_join(article_words, total_words)
+```
+
+```{r calculate single word tf-idf and plot, echo = FALSE}
+
+# Calculate and bind `tf` and `idf` values
+article_words <- article_words %>%
+  bind_tf_idf(word, year, n)
+
+# Plot top 15 tf-idf words by selected years
+article_words %>% filter(year %in% c(2007, 2011, 2015, 2019)) %>% 
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word)))) %>% 
+  group_by(year) %>% 
+  top_n(10) %>% 
+  ungroup %>%
+  ggplot(aes(x = word, y = tf_idf, fill = year)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~year, ncol = 2, scales = "free") +
+  coord_flip()
+```    
+  
+In the plots above, I've only shown the results in four year intervals to give an easy to read snapshot of some of the top 10 keywords that pop up over the years. Having looked at all the top TF-IDF words across all years in the data set, my main takeaway is that every year has a very different set of top keywords and almost none of these keywords are carried over from year-to-year.  
+  
+Just to illustrate this last point, below I show the TF-IDF plots for the past four years consecutive, where you can see that the main keywords do not seem to carry over:
+```{r plot TF-IDF 2015-2019, echo = FALSE}
+
+article_words %>% filter(year %in% c(2016, 2017, 2018, 2019)) %>% 
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word)))) %>% 
+  group_by(year) %>% 
+  top_n(10) %>% 
+  ungroup %>%
+  ggplot(aes(x = word, y = tf_idf, fill = year)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~year, ncol = 2, scales = "free") +
+  coord_flip()
+```
+
+### Word pair TF-IDF by years
+  
+Here we can re-run the same analysis as in the previous section, but this time checking for word pair frequencies (i.e. ngram = 2).  
+```{r tabulate bigram frequency, include = FALSE}
+
+# Unnest all text in table
+article_bigram <- article_text %>%
+  unnest_tokens(bigram, text, token = "ngrams", n = 2) 
+
+# Sum for word frequencies by 
+article_bigram <- article_bigram %>% 
+    count(id, journ, year, bigram, sort = TRUE) %>%
+    ungroup()
+
+# Calculate total words
+total_bigram <- article_bigram %>% 
+  group_by(year) %>% 
+  summarize(total = sum(n))
+
+article_bigram <- left_join(article_bigram, total_bigram)
+
+# remove NA rows
+article_bigram <- article_bigram %>% filter(is.na(bigram) != 1)
+```
+
+```{r calculate bigram tf-idf and plot, echo = FALSE}
+
+# Calculate bigram TF-IDF
+article_bigram <- article_bigram %>%
+    bind_tf_idf(bigram, year, n)
+
+# Plot selected years
+article_bigram %>% filter(year %in% c(2007, 2011, 2015, 2019)) %>% 
+    arrange(desc(tf_idf)) %>%
+    mutate(bigram = factor(bigram, levels = rev(unique(bigram)))) %>% 
+    group_by(year) %>% 
+    top_n(10) %>% 
+    ungroup %>%
+    ggplot(aes(x = bigram, y = tf_idf, fill = year)) +
+    geom_col(show.legend = FALSE) +
+    labs(x = NULL, y = "tf-idf") +
+    facet_wrap(~year, ncol = 2, scales = "free") +
+    coord_flip() +
+    theme(axis.text.x  = element_text(angle=60, vjust=0.5))
+```    
+  
+While it might seems that the keyword pairs tells us a bit more, its interesting that they don't necessarily seem to correspond to the single keyword analysis from the same years in question, and even more, just as in the single keyword analysis, they keyword pairs also do not seem to carry over at all from year to year.  
+  
+All in all, it's hard to draw any real conclusions from the analysis of keyword and keyword-pair frequencies other than there does not appear to be a general trend in TF-IDF weighted keywords that we can observe in the abstract text submitted to the AER journals across the years. 
+  
+### LDA topic modeling
+ 
+Another approach we can try to extract some insight from all of the title and abstract text in this database is to use Latent Dirichlet Allocation (LDA) analysis to do some topic modelling, which can easily be done with the `topicmodels` package.  Again, [the process is described in detail](https://www.tidytextmining.com/topicmodeling.html) in Silge and Robinson (2017).  
+```{r create DTM and n-topic model, echo = FALSE}
+
+# Create `DocumentTermMatrix` for years
+years_dtm <- article_words %>%  
+    cast_dtm(year, word, n)
+
+# Create 10-topic model
+years_lda <- LDA(years_dtm, k = 14, control = list(seed = 1234))
+
+# Calculate per-topic-per word probabilities
+year_topics <- tidy(years_lda, matrix = "beta")
+```
+
+```{r select top-n terms and plot, echo = FALSE }
+# Find top 5 terms within each topic
+top_terms <- year_topics %>% 
+    group_by(topic) %>% 
+    top_n(7, beta) %>% 
+    ungroup() %>% 
+    arrange(topic, -beta)
+
+# Plot topics and top 7 terms
+top_terms %>%
+    ggplot(aes(term, beta, fill = factor(topic))) +
+    geom_col(show.legend = FALSE) +
+    facet_wrap(~ topic, scales = "free") +
+    coord_flip() +
+    theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+```  
+
+Here, we are summing over all text in the database and trying to see if we can detect `k = 14` topic groups topics. I tried a few different values for `k` in this initial stage and settled on this number as there are 14 years of text in the database. Here, as in the TDF-IDF analysis from before, we are treating all the text in the database as one large block and trying to identify keywords and topics over the entire corpus.  
+  
+While I can see a bit of differentiation in the topic blocks in this analysis, again, I don't find that this tells us much. On the other hand, I recognize there are several other ways in which we can group the data and run the same analysis, and some of these alternatives undoubtedly make more sense than what I've done here. But as this exercise has taken me far, far longer than I thought, I will have to save the additional topic modeling for Part II. In the meantime, anyone with suggestions or ideas on how to better approach this textual analysis, I would be happy to hear from you!  
